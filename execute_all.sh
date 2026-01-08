@@ -1,14 +1,21 @@
 #!/bin/bash
 
-# Check if project_id and pool_name parameters are provided
+# Check if project_id and name parameters are provided
 if [ -z "$1" ] || [ -z "$2" ]; then
-  echo "Error: project_id and pool_name parameters are required"
-  echo "Usage: $0 <project_id> <pool_name>"
+  echo "Error: project_id and name parameters are required"
+  echo "Usage: $0 <project_id> <name>"
   exit 1
 fi
 
 export PROJECT_ID="$1"
-export POOL_NAME="$2"
+export NAME="$2"
+
+# Ensure NAME is at least 6 characters
+if [ ${#NAME} -lt 6 ]; then
+  echo "Error: name parameter must be at least 6 characters"
+  echo "Usage: $0 <project_id> <name>"
+  exit 1
+fi
 
 gcloud projects create $PROJECT_ID
 
@@ -24,7 +31,7 @@ gcloud services enable iamcredentials.googleapis.com sts.googleapis.com pubsub.g
 
 # Create pool
 echo "Creating Workload Identity Pool..."
-eval gcloud iam workload-identity-pools create $POOL_NAME --location=global --project $PROJECT_ID 
+eval gcloud iam workload-identity-pools create $NAME --location=global --project $PROJECT_ID 
 
 echo "Workload Identity Pool created."
 
@@ -39,7 +46,7 @@ echo "Creating Workload Identity Provider..."
 export JWKS_CONTENT=$(cat public_key.jwks)
 gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
   --location=global \
-  --workload-identity-pool=$POOL_NAME \
+  --workload-identity-pool=$NAME \
   --issuer-uri="https://my-external-idp.example.com" \
   --allowed-audiences="gcp-workload-identity" \
   --attribute-mapping="google.subject=assertion.sub" \
@@ -48,31 +55,37 @@ gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
 
 # Create service account
 echo "Creating Service Account..."
-gcloud iam service-accounts create wif-sa
-export SA_EMAIL="wif-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud iam service-accounts create $NAME
+export SA_EMAIL="${NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 echo "Service Account Email: $SA_EMAIL"
 
 # Grant permissions
+echo "Granting permissions to Service Account..."
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/pubsub.viewer" \
-  --condition=None
+  --role="roles/pubsub.viewer" 
 
+echo "Binding Workload Identity Pool to Service Account..."
 gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_NAME}/*" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*" \
   --role="roles/iam.workloadIdentityUser"
 
+gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*" \
+  --role="roles/iam.serviceAccountTokenCreator"
+
+
 echo "Creating Pub/Sub topic..."
-gcloud pubsub topics create test-topic-1 --project $PROJECT_ID
+gcloud pubsub topics create $NAME --project $PROJECT_ID
 
 echo "creating config.json file..."
 cat <<EOF > config.json
 {
   "project_id": "$PROJECT_ID",
   "project_number": "$PROJECT_NUMBER",
-  "pool_id": "$POOL_NAME",
-  "provider_id": "external-jwt-provider",
-  "service_account_email": "wif-sa@$PROJECT_ID.iam.gserviceaccount.com",
+  "pool_id": "$NAME",
+  "provider_id": "external-jwt-provider-$NAME",
+  "service_account_email": "$SA_EMAIL",
   "issuer_url": "https://my-external-idp.example.com",
   "jwt_audience": "gcp-workload-identity",
   "key_id": "key-1",
@@ -99,16 +112,17 @@ echo "Cleanup commands (not executed):"
 echo "========================================="
 echo ""
 echo "# Delete Pub/Sub topic"
-echo "gcloud pubsub topics delete test-topic-1 --project $PROJECT_ID"
+echo "gcloud pubsub topics delete $NAME --project $PROJECT_ID"
 echo ""
 echo "# Delete service account"
-echo "gcloud iam service-accounts delete wif-sa@${PROJECT_ID}.iam.gserviceaccount.com --project $PROJECT_ID"
+echo "gcloud iam service-accounts delete $SA_EMAIL --project $PROJECT_ID"
 echo ""
 echo "# Delete Workload Identity Provider"
-echo "gcloud iam workload-identity-pools providers delete external-jwt-provider --workload-identity-pool=$POOL_NAME --location=global --project $PROJECT_ID"
+echo "gcloud iam workload-identity-pools providers delete external-jwt-provider --workload-identity-pool=$NAME --location=global --project $PROJECT_ID"
 echo ""
 echo "# Delete Workload Identity Pool"
-echo "gcloud iam workload-identity-pools delete $POOL_NAME --location=global --project $PROJECT_ID"
+echo "gcloud iam workload-identity-pools delete $NAME --location=global --project $PROJECT_ID"
 echo ""
 echo "# Delete project (optional)"
 echo "gcloud projects delete $PROJECT_ID"
+

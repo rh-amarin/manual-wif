@@ -81,81 +81,6 @@ go mod tidy
 This will download:
 - `github.com/golang-jwt/jwt/v5` - For JWT creation and signing
 
-### 2. Set Up GCP Resources
-
-Follow the detailed guide in [GCP_SETUP.md](GCP_SETUP.md). This involves:
-- Creating a Workload Identity Pool
-- Creating a Workload Identity Provider
-- Creating a Service Account
-- Configuring IAM bindings
-
-**Quick version:**
-```bash
-
-export PROJECT_ID="your-project-id"
-export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
-
-# Enable APIs
-gcloud services enable iamcredentials.googleapis.com sts.googleapis.com pubsub.googleapis.com
-
-# Create pool
-gcloud iam workload-identity-pools create external-identity-pool --location=global
-
-# Create provider with inline JWK (after running step1 and step1b to generate public_key.jwks.json)
-JWKS_CONTENT=$(cat public_key.jwks)
-gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
-  --location=global \
-  --workload-identity-pool=external-identity-pool \
-  --issuer-uri="https://my-external-idp.example.com" \
-  --allowed-audiences="gcp-workload-identity" \
-  --attribute-mapping="google.subject=assertion.sub" \
-  --jwk-json-path=<(echo "$JWKS_CONTENT")
-```
-
-**Note**: GCP needs access to the public key used to sign tokens. There are two alternatives:
- - Make the keys accessible through a public endpoint (https://my-external-idp.example.com)
- - Upload the contents using `--jwk-json-path` showed above, in which case, the `--issuer-uri` value doesn't matter
-
-More info in (JWK_UPLOAD_GUIDE.md)[JWK_UPLOAD_GUIDE.md]
-
-```bash
-# Create service account
-gcloud iam service-accounts create wif-sa
-export SA_EMAIL="wif-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-
-# Grant permissions
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/pubsub.viewer"
-
-gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/external-identity-pool/*" \
-  --role="roles/iam.workloadIdentityUser"
-```
-
-### 3. Create Configuration File
-
-Copy the template and fill in your values:
-
-```bash
-cp config.json.template config.json
-```
-
-Edit `config.json`:
-```json
-{
-  "project_id": "your-gcp-project-id",
-  "project_number": "123456789012",
-  "pool_id": "external-identity-pool",
-  "provider_id": "external-jwt-provider",
-  "issuer_url": "https://my-external-idp.example.com",
-  "jwt_audience": "gcp-workload-identity",
-  "service_account_email": "wif-sa@your-gcp-project-id.iam.gserviceaccount.com"
-}
-```
-
-### 4. Run the POC
-
 Execute:
 
 ```bash
@@ -164,11 +89,6 @@ Execute:
 
 If the project/pool exists the script will give some errors but will keep running
 
-### 5. (Optional) Create Test Data
-
-```bash
-gcloud pubsub topics create test-topic --project=your-project-id
-```
 
 ## What Each Step Does
 
