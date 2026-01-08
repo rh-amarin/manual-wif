@@ -54,6 +54,7 @@ This project shows how an **external identity** (outside of GCP) can access GCP 
 ├── README.md                    # This file
 ├── GCP_SETUP.md                # Detailed GCP configuration guide
 ├── Makefile                    # Build commands
+├── execute_all.sh              # Automated script to run complete flow
 │
 ├── cmd/
 │   ├── generate-keys/          # Generate RSA key pair
@@ -72,59 +73,136 @@ This project shows how an **external identity** (outside of GCP) can access GCP 
 3. **gcloud CLI**: Installed and authenticated
 4. **Permissions**: To create IAM resources in GCP
 
-## Quick Start
+## Quick Start: Automated Setup (Recommended for Testing)
 
-### 1. Build the Commands
-
-```bash
-make build
-```
-
-This will:
-- Install dependencies (`github.com/golang-jwt/jwt/v5`)
-- Build all command binaries to the `bin/` directory
-
-### 2. Complete GCP Setup
-
-Follow the instructions in [GCP_SETUP.md](GCP_SETUP.md) to:
-- Create a Workload Identity Pool
-- Create a Workload Identity Provider
-- Create and configure a Service Account
-- Upload your public JWK
-
-### 3. Run the Commands
-
-Each command will print the exact format needed for the next step.
+Run the entire flow with a single script:
 
 ```bash
-# Step 1: Generate RSA key pair
-./bin/generate-keys
-
-# Step 2: Generate JWK format (use the key-id you'll configure in GCP)
-./bin/generate-jwk --key-id key-1
-
-# Step 3: Create and sign a JWT token
-./bin/create-jwt \
-  --key-id key-1 \
-  --issuer https://my-external-idp.example.com \
-  --audience gcp-workload-identity \
-  --subject external-user-123 \
-  --email user@example.com \
-  --environment production
-
-# Step 4: Exchange JWT for GCP access token
-./bin/exchange-token \
-  --project-number 123456789 \
-  --pool-id my-pool \
-  --provider-id my-provider \
-  --service-account my-sa@my-project.iam.gserviceaccount.com
-
-# Step 5: Use the access token to call GCP APIs
-./bin/list-topics --project-id my-project
+./execute_all.sh <project_id> <name>
 ```
 
-**Important**: Replace the example values with your actual GCP project details.
+**Parameters:**
+- `project_id`: Your GCP project ID (will be created if it doesn't exist)
+- `name`: A unique identifier (minimum 6 characters) used for naming resources
 
+**Example:**
+```bash
+./execute_all.sh my-wif-test mytest01
+```
+Note: step 10 can take some time for the oidc-provider to properly initialize. (It retries in case of errors)
+
+**What the script does:**
+1. Creates a new GCP project (or uses existing)
+2. Enables required APIs (IAM, STS, Pub/Sub)
+3. Creates Workload Identity Pool
+4. Generates RSA key pair and JWK files
+5. Creates Workload Identity Provider with inline JWK
+6. Creates and configures Service Account
+7. Grants necessary permissions
+8. Creates a test Pub/Sub topic
+9. Generates and signs a JWT token
+10. Exchanges JWT for GCP access token (with automatic retries)
+11. Uses the access token to list Pub/Sub topics
+
+**Note:** The token exchange step may take 1-5 minutes as GCP permissions propagate. The script automatically retries every 10 seconds until successful.
+
+**Verification:**
+If successful, you'll see a list of topics in the project
+
+The script will display cleanup commands at the end to delete all created resources.
+
+**Files created:**
+- `private_key_<name>.pem` - Private signing key
+- `public_key_<name>.pem` - Public key (PEM format)
+- `public_key_<name>.jwk` - Public key (JWK format)
+- `public_key_<name>.jwks` - Public key set (JWKS format)
+- `external_token_<name>.jwt` - Signed JWT token
+- `gcp_access_token_<name>.txt` - GCP access token
+
+## Verifying the Setup
+
+After running the automated script or completing the manual steps, you can verify each component:
+
+### 1. Check Workload Identity Pool
+
+```bash
+gcloud iam workload-identity-pools describe <name> \
+  --location=global \
+  --project=<project_id>
+```
+
+### 2. Check Workload Identity Provider
+
+```bash
+gcloud iam workload-identity-pools providers describe external-jwt-provider-<name> \
+  --workload-identity-pool=<name> \
+  --location=global \
+  --project=<project_id>
+```
+
+Verify the output shows:
+- `issuerUri: https://my-external-idp.example.com`
+- `allowedAudiences: gcp-workload-identity`
+- `attributeMapping` includes `google.subject=assertion.sub`
+
+### 3. Check Service Account and Permissions
+
+```bash
+# Verify service account exists
+gcloud iam service-accounts describe <name>@<project_id>.iam.gserviceaccount.com
+
+# Check Pub/Sub viewer role
+gcloud projects get-iam-policy <project_id> \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:<name>@<project_id>.iam.gserviceaccount.com AND bindings.role:roles/pubsub.viewer"
+
+# Check workloadIdentityUser binding
+gcloud iam service-accounts get-iam-policy <name>@<project_id>.iam.gserviceaccount.com \
+  --format=json
+```
+
+The last command should show a binding with:
+- `role: roles/iam.workloadIdentityUser`
+- `members` including `principalSet://iam.googleapis.com/projects/<project_number>/locations/global/workloadIdentityPools/<name>/*`
+
+### 4. Inspect Generated Files
+
+```bash
+# View the JWT token claims (without verification)
+cat external_token_<name>.jwt | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+
+# View the access token (first 50 chars)
+head -c 50 gcp_access_token_<name>.txt && echo "..."
+```
+
+The JWT should show claims like:
+```json
+{
+  "iss": "https://my-external-idp.example.com",
+  "sub": "external-user-123",
+  "aud": "gcp-workload-identity",
+  "email": "user@example.com",
+  "environment": "production",
+  "exp": ...,
+  "iat": ...
+}
+```
+
+### 5. Test the Access Token Manually
+
+```bash
+# Use the access token to call Pub/Sub API
+curl -H "Authorization: Bearer $(cat gcp_access_token_<name>.txt)" \
+  "https://pubsub.googleapis.com/v1/projects/<project_id>/topics"
+```
+
+You should see a list of topics including the one created by the script.
+
+### 6. Check Pub/Sub Topic
+
+```bash
+gcloud pubsub topics list --project=<project_id>
+```
 
 ## What Each Step Does
 
@@ -252,22 +330,56 @@ See [GCP_SETUP.md](GCP_SETUP.md) for production recommendations.
 
 ## Troubleshooting
 
-### "Workload identity pool does not exist"
-- Run the GCP setup commands in [GCP_SETUP.md](GCP_SETUP.md)
-- Verify: `gcloud iam workload-identity-pools describe external-identity-pool --location=global`
+### Automated Script Issues
 
-### "Invalid JWT"
+#### "Error: name parameter must be at least 6 characters"
+The `name` parameter is used for multiple GCP resources that have minimum length requirements. Use a name with at least 6 characters.
+
+#### "Token exchange failed after 30 attempts"
+This usually means:
+1. **Permissions haven't propagated** - GCP can take 5+ minutes to propagate IAM permissions. The script retries for up to 5 minutes, but you may need to wait longer and run the exchange-token command manually.
+2. **Service account binding is incorrect** - Verify with:
+   ```bash
+   gcloud iam service-accounts get-iam-policy <name>@<project_id>.iam.gserviceaccount.com
+   ```
+3. **JWT configuration mismatch** - Ensure issuer and audience in the JWT match the provider configuration.
+
+#### "API [service] not enabled on project"
+The script enables required APIs automatically, but this can fail if:
+- Billing is not enabled on the project
+- You don't have permission to enable APIs
+- Solution: Manually enable the API and re-run the script:
+  ```bash
+  gcloud services enable [service-name] --project=<project_id>
+  ```
+
+#### Script fails partway through
+The script is designed to be somewhat idempotent, but if it fails partway:
+1. Check which resources were created using the verification commands above
+2. Either delete the partial resources and start fresh, or manually complete the remaining steps
+3. Use the cleanup commands printed at the end to remove resources
+
+### Manual Setup Issues
+
+#### "Workload identity pool does not exist"
+- Run the GCP setup commands in [GCP_SETUP.md](GCP_SETUP.md)
+- Verify: `gcloud iam workload-identity-pools describe <pool-name> --location=global`
+
+#### "Invalid JWT"
 - Check that `iss` in JWT matches provider's `--issuer-uri`
 - Check that `aud` in JWT matches provider's `--allowed-audiences`
 - Verify JWT has all required claims: `iss`, `sub`, `aud`, `exp`, `iat`
+- Inspect your JWT claims: `cat external_token_<name>.jwt | cut -d. -f2 | base64 -d 2>/dev/null | jq .`
 
-### "Permission denied" from STS API
+#### "Permission denied" from STS API
 - Verify service account has `workloadIdentityUser` role binding
 - Check the audience in your token exchange matches your pool/provider
+- Ensure the principal set in the IAM binding matches your pool path
 
-### "Permission denied" from Pub/Sub API
+#### "Permission denied" from Pub/Sub API
 - Verify service account has `roles/pubsub.viewer` on the project
-- Ensure the access token is from step 3b (not the federated token from 3a)
+- Ensure the access token is from the second exchange (not the federated token from the first exchange)
+- Check that you're using the correct project ID
 
 ## Learning Resources
 
@@ -289,13 +401,27 @@ Once you understand the basics:
 ## Files Generated
 
 These files are created during execution (gitignored):
+
+### Build Output
 - `bin/` - Compiled command binaries (created by `make build`)
+
+### Automated Script Output (when using execute_all.sh)
+- `private_key_<name>.pem` - RSA private key (keep secret!)
+- `public_key_<name>.pem` - RSA public key in PEM format
+- `public_key_<name>.jwk` - RSA public key as single JSON Web Key
+- `public_key_<name>.jwks` - RSA public key as JSON Web Key Set (for GCP)
+- `external_token_<name>.jwt` - Signed JWT token
+- `gcp_access_token_<name>.txt` - GCP access token
+
+### Manual Setup Output (default file names)
 - `private_key.pem` - RSA private key (keep secret!)
 - `public_key.pem` - RSA public key in PEM format
 - `public_key.jwk` - RSA public key as single JSON Web Key
 - `public_key.jwks` - RSA public key as JSON Web Key Set (for GCP)
 - `external_token.jwt` - Signed JWT token
 - `gcp_access_token.txt` - GCP access token
+
+**Note:** The automated script uses the `<name>` parameter in filenames to allow running multiple tests in parallel without conflicts.
 
 ## License
 

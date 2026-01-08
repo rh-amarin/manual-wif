@@ -65,19 +65,13 @@ eval gcloud iam workload-identity-pools create $NAME --location=global --project
 echo "Workload Identity Pool created."
 
 echo ""
-print_header "========================================="
 print_header "Generating keys..."
-print_header "========================================="
 print_command "go run cmd/generate-keys/main.go --private-key $PRIVATE_KEY_FILE --public-key $PUBLIC_KEY_FILE"
-echo "-----------------------------------------"
 go run cmd/generate-keys/main.go --private-key "$PRIVATE_KEY_FILE" --public-key "$PUBLIC_KEY_FILE"
 echo ""
 
-print_header "========================================="
 print_header "Generating JWK..."
-print_header "========================================="
 print_command "go run cmd/generate-jwk/main.go --key-id $KEY_ID --public-key $PUBLIC_KEY_FILE --jwk-output $JWK_FILE --jwks-output $JWKS_FILE"
-echo "-----------------------------------------"
 go run cmd/generate-jwk/main.go --key-id "$KEY_ID" --public-key "$PUBLIC_KEY_FILE" --jwk-output "$JWK_FILE" --jwks-output "$JWKS_FILE"
 echo ""
 
@@ -127,7 +121,6 @@ print_header "========================================="
 print_header "Creating JWT..."
 print_header "========================================="
 print_command "go run cmd/create-jwt/main.go --key-id $KEY_ID --issuer https://my-external-idp.example.com --audience gcp-workload-identity --subject external-user-123 --email user@example.com --environment production --private-key $PRIVATE_KEY_FILE --output $EXTERNAL_TOKEN_FILE"
-echo "-----------------------------------------"
 go run cmd/create-jwt/main.go \
   --key-id "$KEY_ID" \
   --issuer https://my-external-idp.example.com \
@@ -139,11 +132,8 @@ go run cmd/create-jwt/main.go \
   --output "$EXTERNAL_TOKEN_FILE"
 echo ""
 
-print_header "========================================="
 print_header "Exchanging token..."
-print_header "========================================="
 print_command "go run cmd/exchange-token/main.go --project-number $PROJECT_NUMBER --pool-id $NAME --provider-id external-jwt-provider-$NAME --service-account $SA_EMAIL --token-input $EXTERNAL_TOKEN_FILE --output $GCP_ACCESS_TOKEN_FILE"
-echo "-----------------------------------------"
 echo "Note: This step may fail initially while permissions propagate through GCP."
 echo "Will retry every 10 seconds until successful..."
 echo ""
@@ -196,11 +186,8 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 echo ""
 
-print_header "========================================="
 print_header "Listing Pub/Sub topics..."
-print_header "========================================="
 print_command "go run cmd/list-topics/main.go --project-id $PROJECT_ID --token-input $GCP_ACCESS_TOKEN_FILE"
-echo "-----------------------------------------"
 go run cmd/list-topics/main.go --project-id $PROJECT_ID --token-input "$GCP_ACCESS_TOKEN_FILE"
 echo ""
 
