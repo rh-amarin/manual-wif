@@ -148,36 +148,21 @@ Edit `config.json`:
   "project_number": "123456789012",
   "pool_id": "external-identity-pool",
   "provider_id": "external-jwt-provider",
+  "issuer_url": "https://my-external-idp.example.com",
+  "jwt_audience": "gcp-workload-identity",
   "service_account_email": "wif-sa@your-gcp-project-id.iam.gserviceaccount.com"
 }
 ```
 
 ### 4. Run the POC
 
-Execute each step in order:
+Execute:
 
 ```bash
-# Step 1: Generate RSA key pair
-go run step1_generate_keys.go
-# Creates: private_key.pem, public_key.pem
-
-# Step 1b: Generate JWK files for GCP
-go run step1b_generate_jwk.go
-# Creates: public_key.jwk, public_key.jwks.json
-# Note: See JWK_UPLOAD_GUIDE.md for how to configure GCP with these files
-
-# Step 2: Create and sign JWT token
-go run step2_create_jwt.go
-# Creates: external_token.jwt
-
-# Step 3: Exchange JWT for GCP access token
-go run step3_exchange_token.go
-# Creates: gcp_access_token.txt
-
-# Step 4: List Pub/Sub topics
-go run step4_list_topics.go
-# Calls Pub/Sub API and lists topics
+./execute_all.sh "your-gcp-project-id" "name-of-identity-pool"
 ```
+
+If the project/pool exists the script will give some errors but will keep running
 
 ### 5. (Optional) Create Test Data
 

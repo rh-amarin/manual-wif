@@ -3,5 +3,11 @@
   "project_number": "123456789012",
   "pool_id": "external-identity-pool",
   "provider_id": "external-jwt-provider",
-  "service_account_email": "wif-sa@your-gcp-project-id.iam.gserviceaccount.com"
+  "issuer_url": "https://my-external-idp.example.com",
+  "jwt_audience": "gcp-workload-identity",
+  "service_account_email": "wif-sa@your-gcp-project-id.iam.gserviceaccount.com",
+  "key_id": "key-1",
+  "subject": "external-user-123",
+  "user_email": "user@example.com",
+  "environment": "production"
 }
