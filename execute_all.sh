@@ -28,12 +28,12 @@ export PROJECT_ID="$1"
 export NAME="$2"
 
 # File paths (can be customized)
-export PRIVATE_KEY_FILE="${PRIVATE_KEY_FILE:-private_key.pem}"
-export PUBLIC_KEY_FILE="${PUBLIC_KEY_FILE:-public_key.pem}"
-export JWK_FILE="${JWK_FILE:-public_key.jwk}"
-export JWKS_FILE="${JWKS_FILE:-public_key.jwks}"
-export EXTERNAL_TOKEN_FILE="${EXTERNAL_TOKEN_FILE:-external_token.jwt}"
-export GCP_ACCESS_TOKEN_FILE="${GCP_ACCESS_TOKEN_FILE:-gcp_access_token.txt}"
+export PRIVATE_KEY_FILE="${PRIVATE_KEY_FILE:-private_key_$NAME.pem}"
+export PUBLIC_KEY_FILE="${PUBLIC_KEY_FILE:-public_key_$NAME.pem}"
+export JWK_FILE="${JWK_FILE:-public_key_$NAME.jwk}"
+export JWKS_FILE="${JWKS_FILE:-public_key_$NAME.jwks}"
+export EXTERNAL_TOKEN_FILE="${EXTERNAL_TOKEN_FILE:-external_token_$NAME.jwt}"
+export GCP_ACCESS_TOKEN_FILE="${GCP_ACCESS_TOKEN_FILE:-gcp_access_token_$NAME.txt}"
 export KEY_ID="${KEY_ID:-key-1}"
 
 # Ensure NAME is at least 6 characters
@@ -144,13 +144,56 @@ print_header "Exchanging token..."
 print_header "========================================="
 print_command "go run cmd/exchange-token/main.go --project-number $PROJECT_NUMBER --pool-id $NAME --provider-id external-jwt-provider-$NAME --service-account $SA_EMAIL --token-input $EXTERNAL_TOKEN_FILE --output $GCP_ACCESS_TOKEN_FILE"
 echo "-----------------------------------------"
-go run cmd/exchange-token/main.go \
-  --project-number $PROJECT_NUMBER \
-  --pool-id $NAME \
-  --provider-id external-jwt-provider-$NAME \
-  --service-account $SA_EMAIL \
-  --token-input "$EXTERNAL_TOKEN_FILE" \
-  --output "$GCP_ACCESS_TOKEN_FILE"
+echo "Note: This step may fail initially while permissions propagate through GCP."
+echo "Will retry every 10 seconds until successful..."
+echo ""
+
+# Retry loop for exchange-token
+MAX_RETRIES=30
+RETRY_COUNT=0
+RETRY_DELAY=10
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+
+  if [ $RETRY_COUNT -gt 1 ]; then
+    echo "Retry attempt $RETRY_COUNT of $MAX_RETRIES..."
+  fi
+
+  # Remove any existing partial output file
+  rm -f "$GCP_ACCESS_TOKEN_FILE"
+
+  # Try to exchange the token
+  if go run cmd/exchange-token/main.go \
+    --project-number $PROJECT_NUMBER \
+    --pool-id $NAME \
+    --provider-id external-jwt-provider-$NAME \
+    --service-account $SA_EMAIL \
+    --token-input "$EXTERNAL_TOKEN_FILE" \
+    --output "$GCP_ACCESS_TOKEN_FILE" 2>&1; then
+
+    # Check if the output file was created and is not empty
+    if [ -f "$GCP_ACCESS_TOKEN_FILE" ] && [ -s "$GCP_ACCESS_TOKEN_FILE" ]; then
+      echo ""
+      echo -e "${COLOR_GREEN}✓ Token exchange successful!${COLOR_RESET}"
+      break
+    fi
+  fi
+
+  if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+    echo "Token exchange failed. Waiting ${RETRY_DELAY} seconds before retry..."
+    echo "This is normal - GCP permissions can take time to propagate."
+    sleep $RETRY_DELAY
+  else
+    echo ""
+    echo -e "${COLOR_RESET}Error: Token exchange failed after $MAX_RETRIES attempts."
+    echo "Please check:"
+    echo "  1. Service account bindings are correct"
+    echo "  2. Workload Identity Pool configuration is correct"
+    echo "  3. JWT token is valid"
+    exit 1
+  fi
+done
 echo ""
 
 print_header "========================================="

@@ -1,12 +1,12 @@
 # Generated keys - never commit these!
-private_key.pem
-public_key.pem
-public_key.jwk
-public_key.jwks
+private_key*.pem
+public_key*.pem
+public_key*.jwk
+public_key*.jwks
 
 # Generated tokens
-external_token.jwt
-gcp_access_token.txt
+external_token*.jwt
+gcp_access_token*.txt
 
 # Configuration with secrets
 config.json
