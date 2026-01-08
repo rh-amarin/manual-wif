@@ -1,5 +1,22 @@
 #!/bin/bash
 
+# Color definitions
+COLOR_RESET='\033[0m'
+COLOR_BLUE='\033[1;34m'
+COLOR_GREEN='\033[1;32m'
+COLOR_YELLOW='\033[1;33m'
+COLOR_CYAN='\033[0;36m'
+
+# Function to print colored command
+print_command() {
+  echo -e "${COLOR_BLUE}$1${COLOR_RESET}"
+}
+
+# Function to print section header
+print_header() {
+  echo -e "${COLOR_YELLOW}$1${COLOR_RESET}"
+}
+
 # Check if project_id and name parameters are provided
 if [ -z "$1" ] || [ -z "$2" ]; then
   echo "Error: project_id and name parameters are required"
@@ -10,6 +27,15 @@ fi
 export PROJECT_ID="$1"
 export NAME="$2"
 
+# File paths (can be customized)
+export PRIVATE_KEY_FILE="${PRIVATE_KEY_FILE:-private_key.pem}"
+export PUBLIC_KEY_FILE="${PUBLIC_KEY_FILE:-public_key.pem}"
+export JWK_FILE="${JWK_FILE:-public_key.jwk}"
+export JWKS_FILE="${JWKS_FILE:-public_key.jwks}"
+export EXTERNAL_TOKEN_FILE="${EXTERNAL_TOKEN_FILE:-external_token.jwt}"
+export GCP_ACCESS_TOKEN_FILE="${GCP_ACCESS_TOKEN_FILE:-gcp_access_token.txt}"
+export KEY_ID="${KEY_ID:-key-1}"
+
 # Ensure NAME is at least 6 characters
 if [ ${#NAME} -lt 6 ]; then
   echo "Error: name parameter must be at least 6 characters"
@@ -17,34 +43,49 @@ if [ ${#NAME} -lt 6 ]; then
   exit 1
 fi
 
+print_command "gcloud projects create $PROJECT_ID"
 gcloud projects create $PROJECT_ID
 
+print_command "gcloud config set project $PROJECT_ID"
 gcloud config set project $PROJECT_ID
-
 
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 echo "Project ID: $PROJECT_ID"
 echo "Project Number: $PROJECT_NUMBER"
 
 # Enable APIs
+print_command "gcloud services enable iamcredentials.googleapis.com sts.googleapis.com pubsub.googleapis.com --project $PROJECT_ID"
 gcloud services enable iamcredentials.googleapis.com sts.googleapis.com pubsub.googleapis.com --project $PROJECT_ID
 
 # Create pool
 echo "Creating Workload Identity Pool..."
-eval gcloud iam workload-identity-pools create $NAME --location=global --project $PROJECT_ID 
+print_command "gcloud iam workload-identity-pools create $NAME --location=global --project $PROJECT_ID"
+eval gcloud iam workload-identity-pools create $NAME --location=global --project $PROJECT_ID
 
 echo "Workload Identity Pool created."
 
-echo "Generating keys..."
-go run step1_generate_keys.go
+echo ""
+print_header "========================================="
+print_header "Generating keys..."
+print_header "========================================="
+print_command "go run cmd/generate-keys/main.go --private-key $PRIVATE_KEY_FILE --public-key $PUBLIC_KEY_FILE"
+echo "-----------------------------------------"
+go run cmd/generate-keys/main.go --private-key "$PRIVATE_KEY_FILE" --public-key "$PUBLIC_KEY_FILE"
+echo ""
 
-echo "Generating JWK..."
-go run step1b_generate_jwk.go
+print_header "========================================="
+print_header "Generating JWK..."
+print_header "========================================="
+print_command "go run cmd/generate-jwk/main.go --key-id $KEY_ID --public-key $PUBLIC_KEY_FILE --jwk-output $JWK_FILE --jwks-output $JWKS_FILE"
+echo "-----------------------------------------"
+go run cmd/generate-jwk/main.go --key-id "$KEY_ID" --public-key "$PUBLIC_KEY_FILE" --jwk-output "$JWK_FILE" --jwks-output "$JWKS_FILE"
+echo ""
 
 echo "Creating Workload Identity Provider..."
-# Create provider with inline JWK (after running step1 and step1b to generate public_key.jwks.json)
-export JWKS_CONTENT=$(cat public_key.jwks)
-gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
+# Create provider with inline JWK
+export JWKS_CONTENT=$(cat "$JWKS_FILE")
+print_command "gcloud iam workload-identity-pools providers create-oidc external-jwt-provider-$NAME --location=global --workload-identity-pool=$NAME --issuer-uri=\"https://my-external-idp.example.com\" --allowed-audiences=\"gcp-workload-identity\" --attribute-mapping=\"google.subject=assertion.sub\" --jwk-json-path=<(echo \"\$JWKS_CONTENT\") --project $PROJECT_ID"
+gcloud iam workload-identity-pools providers create-oidc external-jwt-provider-$NAME \
   --location=global \
   --workload-identity-pool=$NAME \
   --issuer-uri="https://my-external-idp.example.com" \
@@ -55,74 +96,110 @@ gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
 
 # Create service account
 echo "Creating Service Account..."
+print_command "gcloud iam service-accounts create $NAME"
 gcloud iam service-accounts create $NAME
 export SA_EMAIL="${NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 echo "Service Account Email: $SA_EMAIL"
 
 # Grant permissions
 echo "Granting permissions to Service Account..."
+print_command "gcloud projects add-iam-policy-binding $PROJECT_ID --member=\"serviceAccount:${SA_EMAIL}\" --role=\"roles/pubsub.viewer\" --condition=None"
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/pubsub.viewer" 
+  --role="roles/pubsub.viewer" --condition=None
 
 echo "Binding Workload Identity Pool to Service Account..."
+print_command "gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL --member=\"principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*\" --role=\"roles/iam.workloadIdentityUser\" --condition=None"
 gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
   --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*" \
-  --role="roles/iam.workloadIdentityUser"
+  --role="roles/iam.workloadIdentityUser" --condition=None
 
-gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*" \
-  --role="roles/iam.serviceAccountTokenCreator"
-
+# gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
+# --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${NAME}/*" \
+# --role="roles/iam.serviceAccountTokenCreator" --condition=None
 
 echo "Creating Pub/Sub topic..."
+print_command "gcloud pubsub topics create $NAME --project $PROJECT_ID"
 gcloud pubsub topics create $NAME --project $PROJECT_ID
 
-echo "creating config.json file..."
-cat <<EOF > config.json
-{
-  "project_id": "$PROJECT_ID",
-  "project_number": "$PROJECT_NUMBER",
-  "pool_id": "$NAME",
-  "provider_id": "external-jwt-provider-$NAME",
-  "service_account_email": "$SA_EMAIL",
-  "issuer_url": "https://my-external-idp.example.com",
-  "jwt_audience": "gcp-workload-identity",
-  "key_id": "key-1",
-  "subject": "external-user-123",
-  "user_email": "user@example.com",
-  "environment": "production"
-}
-EOF
+echo ""
+print_header "========================================="
+print_header "Creating JWT..."
+print_header "========================================="
+print_command "go run cmd/create-jwt/main.go --key-id $KEY_ID --issuer https://my-external-idp.example.com --audience gcp-workload-identity --subject external-user-123 --email user@example.com --environment production --private-key $PRIVATE_KEY_FILE --output $EXTERNAL_TOKEN_FILE"
+echo "-----------------------------------------"
+go run cmd/create-jwt/main.go \
+  --key-id "$KEY_ID" \
+  --issuer https://my-external-idp.example.com \
+  --audience gcp-workload-identity \
+  --subject external-user-123 \
+  --email user@example.com \
+  --environment production \
+  --private-key "$PRIVATE_KEY_FILE" \
+  --output "$EXTERNAL_TOKEN_FILE"
+echo ""
 
-echo "Config file created:"
-cat config.json
+print_header "========================================="
+print_header "Exchanging token..."
+print_header "========================================="
+print_command "go run cmd/exchange-token/main.go --project-number $PROJECT_NUMBER --pool-id $NAME --provider-id external-jwt-provider-$NAME --service-account $SA_EMAIL --token-input $EXTERNAL_TOKEN_FILE --output $GCP_ACCESS_TOKEN_FILE"
+echo "-----------------------------------------"
+go run cmd/exchange-token/main.go \
+  --project-number $PROJECT_NUMBER \
+  --pool-id $NAME \
+  --provider-id external-jwt-provider-$NAME \
+  --service-account $SA_EMAIL \
+  --token-input "$EXTERNAL_TOKEN_FILE" \
+  --output "$GCP_ACCESS_TOKEN_FILE"
+echo ""
 
-echo "Running steps to create JWT, exchange token, and list topics..."
-go run step2_create_jwt.go
-
-go run step3_exchange_token.go
-
-go run step4_list_topics.go
-
+print_header "========================================="
+print_header "Listing Pub/Sub topics..."
+print_header "========================================="
+print_command "go run cmd/list-topics/main.go --project-id $PROJECT_ID --token-input $GCP_ACCESS_TOKEN_FILE"
+echo "-----------------------------------------"
+go run cmd/list-topics/main.go --project-id $PROJECT_ID --token-input "$GCP_ACCESS_TOKEN_FILE"
+echo ""
 
 echo ""
-echo "========================================="
-echo "Cleanup commands (not executed):"
-echo "========================================="
+print_header "========================================="
+echo -e "${COLOR_GREEN}SUCCESS! All steps completed.${COLOR_RESET}"
+print_header "========================================="
+echo ""
+echo "Configuration used:"
+echo "  Project ID: $PROJECT_ID"
+echo "  Project Number: $PROJECT_NUMBER"
+echo "  Pool ID: $NAME"
+echo "  Provider ID: external-jwt-provider-$NAME"
+echo "  Service Account: $SA_EMAIL"
+echo "  Key ID: $KEY_ID"
+echo ""
+echo "File paths used:"
+echo "  Private Key: $PRIVATE_KEY_FILE"
+echo "  Public Key: $PUBLIC_KEY_FILE"
+echo "  JWK: $JWK_FILE"
+echo "  JWKS: $JWKS_FILE"
+echo "  External Token: $EXTERNAL_TOKEN_FILE"
+echo "  GCP Access Token: $GCP_ACCESS_TOKEN_FILE"
+echo ""
+print_header "========================================="
+print_header "Cleanup commands (not executed):"
+print_header "========================================="
 echo ""
 echo "# Delete Pub/Sub topic"
-echo "gcloud pubsub topics delete $NAME --project $PROJECT_ID"
+print_command "gcloud pubsub topics delete $NAME --project $PROJECT_ID"
 echo ""
 echo "# Delete service account"
-echo "gcloud iam service-accounts delete $SA_EMAIL --project $PROJECT_ID"
+print_command "gcloud iam service-accounts delete $SA_EMAIL --project $PROJECT_ID"
 echo ""
 echo "# Delete Workload Identity Provider"
-echo "gcloud iam workload-identity-pools providers delete external-jwt-provider --workload-identity-pool=$NAME --location=global --project $PROJECT_ID"
+print_command "gcloud iam workload-identity-pools providers delete external-jwt-provider-$NAME --workload-identity-pool=$NAME --location=global --project $PROJECT_ID"
 echo ""
 echo "# Delete Workload Identity Pool"
-echo "gcloud iam workload-identity-pools delete $NAME --location=global --project $PROJECT_ID"
+print_command "gcloud iam workload-identity-pools delete $NAME --location=global --project $PROJECT_ID"
 echo ""
 echo "# Delete project (optional)"
-echo "gcloud projects delete $PROJECT_ID"
-
+print_command "gcloud projects delete $PROJECT_ID"
+echo ""
+echo "# Clean up local files"
+print_command "make clean"

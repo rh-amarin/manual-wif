@@ -5,13 +5,27 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"os"
 )
 
-// Step 1: Generate RSA key pair for signing JWT tokens
-// This simulates an external identity provider's signing key
 func main() {
+	privateKeyPath := flag.String("private-key", "", "Path to save the private key (required)")
+	publicKeyPath := flag.String("public-key", "", "Path to save the public key (required)")
+	flag.Parse()
+
+	if *privateKeyPath == "" || *publicKeyPath == "" {
+		fmt.Println("Error: --private-key and --public-key are required")
+		fmt.Println()
+		fmt.Println("Usage:")
+		fmt.Println("  ./bin/generate-keys --private-key <PATH> --public-key <PATH>")
+		fmt.Println()
+		fmt.Println("Example:")
+		fmt.Println("  ./bin/generate-keys --private-key private_key.pem --public-key public_key.pem")
+		os.Exit(1)
+	}
+
 	fmt.Println("=== Step 1: Generating RSA Key Pair ===")
 	fmt.Println("This key pair will be used to sign JWT tokens from our 'external' identity provider")
 	fmt.Println()
@@ -30,7 +44,7 @@ func main() {
 		Bytes: privateKeyBytes,
 	}
 
-	privateKeyFile, err := os.Create("private_key.pem")
+	privateKeyFile, err := os.Create(*privateKeyPath)
 	if err != nil {
 		fmt.Printf("Error creating private key file: %v\n", err)
 		os.Exit(1)
@@ -54,7 +68,7 @@ func main() {
 		Bytes: publicKeyBytes,
 	}
 
-	publicKeyFile, err := os.Create("public_key.pem")
+	publicKeyFile, err := os.Create(*publicKeyPath)
 	if err != nil {
 		fmt.Printf("Error creating public key file: %v\n", err)
 		os.Exit(1)
@@ -66,8 +80,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("✓ Generated private_key.pem (keep this secret!)")
-	fmt.Println("✓ Generated public_key.pem (you'll upload this to GCP)")
+	fmt.Printf("✓ Generated %s (keep this secret!)\n", *privateKeyPath)
+	fmt.Printf("✓ Generated %s (you'll upload this to GCP)\n", *publicKeyPath)
 	fmt.Println()
-	fmt.Println("Next step: Run step2_create_jwt.go to create a signed JWT token")
+	fmt.Println("=== Next Step ===")
+	fmt.Println("Run the following command to generate JWK format:")
+	fmt.Println()
+	fmt.Println("  ./bin/generate-jwk --key-id <YOUR_KEY_ID>")
+	fmt.Println()
+	fmt.Println("Example:")
+	fmt.Println("  ./bin/generate-jwk --key-id key-1")
 }

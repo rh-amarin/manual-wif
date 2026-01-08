@@ -53,14 +53,16 @@ This project shows how an **external identity** (outside of GCP) can access GCP 
 .
 ├── README.md                    # This file
 ├── GCP_SETUP.md                # Detailed GCP configuration guide
-├── config.json.template        # Configuration template
-├── config.json                 # Your configuration (create from template)
+├── Makefile                    # Build commands
 │
-├── step1_generate_keys.go      # Generate RSA key pair
-├── step1b_generate_jwk.go      # Generate public JWK file to upload to GCP
-├── step2_create_jwt.go         # Create and sign JWT token
-├── step3_exchange_token.go     # Exchange JWT for GCP access token
-└── step4_list_topics.go        # Use access token to call Pub/Sub API
+├── cmd/
+│   ├── generate-keys/          # Generate RSA key pair
+│   ├── generate-jwk/           # Generate public JWK file to upload to GCP
+│   ├── create-jwt/             # Create and sign JWT token
+│   ├── exchange-token/         # Exchange JWT for GCP access token
+│   └── list-topics/            # Use access token to call Pub/Sub API
+│
+└── bin/                        # Compiled binaries (after make build)
 ```
 
 ## Prerequisites
@@ -72,74 +74,140 @@ This project shows how an **external identity** (outside of GCP) can access GCP 
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Build the Commands
 
 ```bash
-go mod tidy
+make build
 ```
 
-This will download:
-- `github.com/golang-jwt/jwt/v5` - For JWT creation and signing
+This will:
+- Install dependencies (`github.com/golang-jwt/jwt/v5`)
+- Build all command binaries to the `bin/` directory
 
-Execute:
+### 2. Complete GCP Setup
+
+Follow the instructions in [GCP_SETUP.md](GCP_SETUP.md) to:
+- Create a Workload Identity Pool
+- Create a Workload Identity Provider
+- Create and configure a Service Account
+- Upload your public JWK
+
+### 3. Run the Commands
+
+Each command will print the exact format needed for the next step.
 
 ```bash
-./execute_all.sh "your-gcp-project-id" "name-of-identity-pool"
+# Step 1: Generate RSA key pair
+./bin/generate-keys
+
+# Step 2: Generate JWK format (use the key-id you'll configure in GCP)
+./bin/generate-jwk --key-id key-1
+
+# Step 3: Create and sign a JWT token
+./bin/create-jwt \
+  --key-id key-1 \
+  --issuer https://my-external-idp.example.com \
+  --audience gcp-workload-identity \
+  --subject external-user-123 \
+  --email user@example.com \
+  --environment production
+
+# Step 4: Exchange JWT for GCP access token
+./bin/exchange-token \
+  --project-number 123456789 \
+  --pool-id my-pool \
+  --provider-id my-provider \
+  --service-account my-sa@my-project.iam.gserviceaccount.com
+
+# Step 5: Use the access token to call GCP APIs
+./bin/list-topics --project-id my-project
 ```
 
-If the project/pool exists the script will give some errors but will keep running
+**Important**: Replace the example values with your actual GCP project details.
 
 
 ## What Each Step Does
 
-### Step 1: Generate Keys
+### Step 1: Generate Keys (`./bin/generate-keys`)
 - Creates an RSA-2048 key pair
 - **private_key.pem**: Used to sign JWTs (keep secret!)
 - **public_key.pem**: Public key in PEM format
+- **No parameters required**
 
 **Key concept**: In a real scenario, this would be your external identity provider's signing key.
 
-### Step 1b: Generate JWK
+**Output**: Prints the command format for the next step.
+
+### Step 2: Generate JWK (`./bin/generate-jwk`)
 - Converts the public key from PEM to JWK (JSON Web Key) format
 - **public_key.jwk**: Single JSON Web Key
-- **public_key.jwks.json**: JSON Web Key Set (what GCP expects)
+- **public_key.jwks**: JSON Web Key Set (what GCP expects)
+
+**Parameters**:
+- `--key-id`: Key identifier (must match what you configure in GCP)
 
 **Key concept**: GCP needs the public key in JWK format to verify JWT signatures. You can either host this at a public URL or provide it inline when configuring the Workload Identity Provider. See [JWK_UPLOAD_GUIDE.md](JWK_UPLOAD_GUIDE.md) for details.
 
-### Step 2: Create JWT
+**Output**: Prints the command format for the next step with the key-id you provided.
+
+### Step 3: Create JWT (`./bin/create-jwt`)
 - Constructs a JWT with claims identifying the external user
 - Signs it with the private key
-- **Claims explained**:
-  - `iss` (issuer): Identifies your external IdP - must match GCP provider config
-  - `sub` (subject): The user/identity - becomes `google.subject` in GCP
-  - `aud` (audience): Who should accept this token - must match GCP provider config
-  - `exp` (expiration): When the token expires
-  - `iat` (issued at): When the token was created
+
+**Parameters**:
+- `--key-id`: Key identifier (required)
+- `--issuer`: Issuer URL (required) - must match GCP provider config
+- `--audience`: JWT audience (required) - must match GCP provider config
+- `--subject`: Subject/user identifier (required)
+- `--email`: User email (optional)
+- `--environment`: Environment name (optional)
+
+**Claims explained**:
+- `iss` (issuer): Identifies your external IdP - must match GCP provider config
+- `sub` (subject): The user/identity - becomes `google.subject` in GCP
+- `aud` (audience): Who should accept this token - must match GCP provider config
+- `exp` (expiration): When the token expires
+- `iat` (issued at): When the token was created
 
 **Key concept**: This JWT proves "I am user X from external system Y"
 
-### Step 3: Exchange Token
+**Output**: Prints the command format for the next step.
+
+### Step 4: Exchange Token (`./bin/exchange-token`)
 This is a **two-step exchange**:
 
-**Step 3a**: External JWT → Federated Token
+**Step 4a**: External JWT → Federated Token
 - Calls GCP STS API with your JWT
 - GCP validates the JWT (issuer, audience, expiration)
 - Returns a federated token (short-lived, can't do much yet)
 
-**Step 3b**: Federated Token → Access Token
+**Step 4b**: Federated Token → Access Token
 - Calls GCP STS API again
 - Exchanges federated token for an access token
 - This step "impersonates" the service account
 - Returns a full GCP access token with the service account's permissions
 
+**Parameters**:
+- `--project-number`: GCP project number (required, not project ID)
+- `--pool-id`: Workload Identity Pool ID (required)
+- `--provider-id`: Workload Identity Provider ID (required)
+- `--service-account`: Service account email to impersonate (required)
+
 **Key concept**: Two exchanges provide security boundaries - first validates external identity, second grants GCP permissions.
 
-### Step 4: Call GCP API
+**Output**: Prints the command format for the next step.
+
+### Step 5: Call GCP API (`./bin/list-topics`)
 - Uses the access token to authenticate to GCP Pub/Sub API
 - Lists topics in the project
 - Demonstrates the external identity successfully accessing GCP resources
 
+**Parameters**:
+- `--project-id`: GCP project ID (required)
+
 **Key concept**: The access token works exactly like a token from `gcloud auth print-access-token`
+
+**Output**: Confirms successful completion of the entire flow.
 
 ## Understanding the Token Exchange
 
@@ -221,13 +289,13 @@ Once you understand the basics:
 ## Files Generated
 
 These files are created during execution (gitignored):
+- `bin/` - Compiled command binaries (created by `make build`)
 - `private_key.pem` - RSA private key (keep secret!)
 - `public_key.pem` - RSA public key in PEM format
 - `public_key.jwk` - RSA public key as single JSON Web Key
-- `public_key.jwks.json` - RSA public key as JSON Web Key Set (for GCP)
+- `public_key.jwks` - RSA public key as JSON Web Key Set (for GCP)
 - `external_token.jwt` - Signed JWT token
 - `gcp_access_token.txt` - GCP access token
-- `config.json` - Your configuration
 
 ## License
 

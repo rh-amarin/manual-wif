@@ -12,6 +12,7 @@ gcp_access_token.txt
 config.json
 
 # Go build artifacts
+bin/
 *.exe
 *.exe~
 *.dll
