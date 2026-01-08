@@ -57,6 +57,7 @@ This project shows how an **external identity** (outside of GCP) can access GCP 
 ├── config.json                 # Your configuration (create from template)
 │
 ├── step1_generate_keys.go      # Generate RSA key pair
+├── step1b_generate_jwk.go      # Generate public JWK file to upload to GCP
 ├── step2_create_jwt.go         # Create and sign JWT token
 ├── step3_exchange_token.go     # Exchange JWT for GCP access token
 └── step4_list_topics.go        # Use access token to call Pub/Sub API
@@ -90,6 +91,7 @@ Follow the detailed guide in [GCP_SETUP.md](GCP_SETUP.md). This involves:
 
 **Quick version:**
 ```bash
+
 export PROJECT_ID="your-project-id"
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 
@@ -99,14 +101,24 @@ gcloud services enable iamcredentials.googleapis.com sts.googleapis.com pubsub.g
 # Create pool
 gcloud iam workload-identity-pools create external-identity-pool --location=global
 
-# Create provider
+# Create provider with inline JWK (after running step1 and step1b to generate public_key.jwks.json)
+JWKS_CONTENT=$(cat public_key.jwks)
 gcloud iam workload-identity-pools providers create-oidc external-jwt-provider \
   --location=global \
   --workload-identity-pool=external-identity-pool \
   --issuer-uri="https://my-external-idp.example.com" \
   --allowed-audiences="gcp-workload-identity" \
-  --attribute-mapping="google.subject=assertion.sub"
+  --attribute-mapping="google.subject=assertion.sub" \
+  --jwk-json-path=<(echo "$JWKS_CONTENT")
+```
 
+**Note**: GCP needs access to the public key used to sign tokens. There are two alternatives:
+ - Make the keys accessible through a public endpoint (https://my-external-idp.example.com)
+ - Upload the contents using `--jwk-json-path` showed above, in which case, the `--issuer-uri` value doesn't matter
+
+More info in (JWK_UPLOAD_GUIDE.md)[JWK_UPLOAD_GUIDE.md]
+
+```bash
 # Create service account
 gcloud iam service-accounts create wif-sa
 export SA_EMAIL="wif-sa@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -149,6 +161,11 @@ Execute each step in order:
 go run step1_generate_keys.go
 # Creates: private_key.pem, public_key.pem
 
+# Step 1b: Generate JWK files for GCP
+go run step1b_generate_jwk.go
+# Creates: public_key.jwk, public_key.jwks.json
+# Note: See JWK_UPLOAD_GUIDE.md for how to configure GCP with these files
+
 # Step 2: Create and sign JWT token
 go run step2_create_jwt.go
 # Creates: external_token.jwt
@@ -173,9 +190,16 @@ gcloud pubsub topics create test-topic --project=your-project-id
 ### Step 1: Generate Keys
 - Creates an RSA-2048 key pair
 - **private_key.pem**: Used to sign JWTs (keep secret!)
-- **public_key.pem**: Would be used by GCP to verify signatures (in production)
+- **public_key.pem**: Public key in PEM format
 
 **Key concept**: In a real scenario, this would be your external identity provider's signing key.
+
+### Step 1b: Generate JWK
+- Converts the public key from PEM to JWK (JSON Web Key) format
+- **public_key.jwk**: Single JSON Web Key
+- **public_key.jwks.json**: JSON Web Key Set (what GCP expects)
+
+**Key concept**: GCP needs the public key in JWK format to verify JWT signatures. You can either host this at a public URL or provide it inline when configuring the Workload Identity Provider. See [JWK_UPLOAD_GUIDE.md](JWK_UPLOAD_GUIDE.md) for details.
 
 ### Step 2: Create JWT
 - Constructs a JWT with claims identifying the external user
@@ -293,7 +317,9 @@ Once you understand the basics:
 
 These files are created during execution (gitignored):
 - `private_key.pem` - RSA private key (keep secret!)
-- `public_key.pem` - RSA public key
+- `public_key.pem` - RSA public key in PEM format
+- `public_key.jwk` - RSA public key as single JSON Web Key
+- `public_key.jwks.json` - RSA public key as JSON Web Key Set (for GCP)
 - `external_token.jwt` - Signed JWT token
 - `gcp_access_token.txt` - GCP access token
 - `config.json` - Your configuration
